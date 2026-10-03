@@ -1,0 +1,90 @@
+name: Build Warp Connect v0.3.12 mobile action + disabled-state polish
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Find and extract Warp Connect v0.3.12 source ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          ZIP="$(find . -maxdepth 1 -type f -iname 'Warp-Connect-v0.3.12*.zip' | head -n 1)"
+          if [ -z "$ZIP" ]; then
+            echo "Warp Connect v0.3.12 source ZIP not found in repository root"
+            exit 1
+          fi
+          rm -rf extracted
+          mkdir extracted
+          unzip -q "$ZIP" -d extracted
+          PROJECT="$(find extracted -type f \( -name settings.gradle -o -name settings.gradle.kts \) -printf '%h\n' | head -n 1)"
+          test -n "$PROJECT"
+          echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
+          echo "Gradle root: $PROJECT"
+
+      - name: Verify stable networking and v0.3.12 UI-only changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          MAIN="$PROJECT_DIR/app/src/main/java/com/iknalos/warpgo/MainActivity.kt"
+          MANIFEST="$PROJECT_DIR/app/src/main/AndroidManifest.xml"
+          APPGRADLE="$PROJECT_DIR/app/build.gradle.kts"
+          USQUE="$PROJECT_DIR/app/src/main/java/com/iknalos/warpgo/UsqueVpnService.kt"
+
+          test -f "$MAIN"
+          test -f "$USQUE"
+          grep -q 'versionName = "0.3.12"' "$APPGRADLE"
+          grep -q 'android:process=":masque"' "$MANIFEST"
+          grep -q 'WarpManager.connect(applicationContext, port)' "$MAIN"
+          grep -q 'WarpManager.disconnect(applicationContext)' "$MAIN"
+          grep -q 'ACTION_QUERY_STATUS' "$MAIN"
+          grep -q 'ACTION_QUERY_STATUS' "$USQUE"
+          grep -q 'Keep the primary action near the connection state on phone/tablet too' "$MAIN"
+          grep -q 'val choicesAlpha = if (allowProtocolChange) 1.0f else 0.42f' "$MAIN"
+          grep -q 'protocolGroup.alpha = choicesAlpha' "$MAIN"
+          grep -q 'portSection.alpha = choicesAlpha' "$MAIN"
+
+          if grep -q 'MASQUE_TO_WIREGUARD_SETTLE_MS\|isFullyStopped()\|moveTaskToFront(' "$MAIN"; then
+            echo "Discarded experimental switching code found"
+            exit 1
+          fi
+          if grep -q 'android.permission.REORDER_TASKS' "$MANIFEST"; then exit 1; fi
+          if grep -q 'android:launchMode="singleTask"' "$MANIFEST"; then exit 1; fi
+          echo "PASS: stable networking retained; phone action and disabled-state visuals updated"
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          gradle clean assembleDebug --no-daemon --stacktrace
+
+      - name: Prepare APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp "$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk" out/Warp-Connect-v0.3.12-debug.apk
+
+      - name: Upload Warp Connect v0.3.12 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Warp-Connect-v0.3.12-debug
+          path: out/Warp-Connect-v0.3.12-debug.apk
